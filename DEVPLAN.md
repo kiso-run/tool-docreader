@@ -105,6 +105,41 @@ Initial implementation of all three actions and five format readers.
 - [x] `uv run pytest tests/ -q` — 45 passed
 - [ ] Manual test: read a 100+ page PDF → output shows header + first N pages + continuation hint (needs VPS)
 
+## M5 — Static fixture files + test coverage gaps
+
+**Problem:** PDF text extraction tests use `unittest.mock` instead of real files — the actual pypdf extraction pipeline is never exercised. Several edge cases are also untested.
+
+### Static fixtures (`tests/fixtures/`)
+
+Generate once with a setup script, commit to repo. No network dependency, no mocks for basic read paths.
+
+- [ ] `sample.pdf` — 3 pages with real text (use reportlab or fpdf2 to generate a PDF with actual embedded text)
+- [ ] `sample.docx` — 2 paragraphs + a heading
+- [ ] `sample.xlsx` — 2 sheets ("Sales" with 5 rows, "Summary" with 2 rows)
+- [ ] `sample.csv` — header + 5 data rows
+- [ ] `sample.txt` — 10 lines of plain text
+- [ ] `create_fixtures.py` — one-time script to regenerate fixtures if needed
+
+### Migrate existing tests to use fixtures
+
+- [ ] `test_read_pdf_with_text` — use `sample.pdf` instead of mock; assert actual extracted text
+- [ ] `test_read_docx`, `test_read_xlsx`, `test_read_csv`, `test_read_txt` — use fixtures instead of per-test generated files (keep fixtures as option alongside `tmp_path` tests)
+
+### Missing test coverage
+
+- [ ] `do_read` XLSX with multiple sheets — verify both sheets appear in output with correct headers
+- [ ] `do_info` for DOCX — currently untested
+- [ ] `do_read` empty CSV → "CSV file is empty."
+- [ ] `do_read` empty DOCX (no paragraphs) → "no text content"
+- [ ] `_parse_page_ranges` with invalid input (`"abc"`, `""`, `"0"`, negative numbers)
+- [ ] Functional test: `info` action via stdin/stdout
+- [ ] Functional test: unknown action → exit 1
+- [ ] Smart truncation XLSX with 2+ sheets where truncation happens mid-second-sheet
+
+### Validation
+- [ ] `uv run pytest tests/ -q` passes
+- [ ] All PDF read tests exercise real pypdf extraction (no mocks for happy path)
+
 ## Known Issues
 
 - pypdf text extraction quality varies by PDF — scanned PDFs produce empty text (no OCR)
