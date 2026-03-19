@@ -1,4 +1,4 @@
-"""Unit tests for tool-docreader (M2)."""
+"""Unit tests for tool-docreader."""
 from __future__ import annotations
 
 import csv
@@ -6,7 +6,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -63,14 +63,6 @@ def pdf_file(workspace):
     # pypdf blank pages have no text — we'll test the "no text" path
     writer.write(str(f))
     return f
-
-
-@pytest.fixture
-def pdf_with_text(workspace):
-    """Create a PDF with actual text content using reportlab-free method."""
-    # We use pypdf's add_blank_page — text extraction returns empty for blank pages.
-    # For a real text PDF we'll mock the reader in specific tests.
-    return None  # See mock-based tests below
 
 
 @pytest.fixture
@@ -153,7 +145,7 @@ class TestDoInfo:
 
 
 # ---------------------------------------------------------------------------
-# do_read
+# do_read — basic (small files, all fit in budget)
 # ---------------------------------------------------------------------------
 
 
@@ -162,17 +154,22 @@ class TestDoRead:
         result = do_read(str(workspace), {"file_path": "uploads/hello.txt"})
         assert "Hello, world!" in result
         assert "Second line." in result
+        assert "Document: hello.txt" in result
 
     def test_read_csv(self, workspace, csv_file):
         result = do_read(str(workspace), {"file_path": "uploads/data.csv"})
         assert "Alice" in result
         assert "Bob" in result
         assert "Rome" in result
+        assert "Dataset: data.csv" in result
+        assert "3 rows" in result
+        assert "Columns:" in result
 
     def test_read_docx(self, workspace, docx_file):
         result = do_read(str(workspace), {"file_path": "uploads/report.docx"})
         assert "First paragraph" in result
         assert "Second paragraph" in result
+        assert "Document: report.docx" in result
 
     def test_read_xlsx(self, workspace, xlsx_file):
         result = do_read(str(workspace), {"file_path": "uploads/sheet.xlsx"})
@@ -180,14 +177,14 @@ class TestDoRead:
         assert "95" in result
         assert "Bob" in result
         assert "Sheet: Data" in result
+        assert "Workbook: sheet.xlsx" in result
 
     def test_read_pdf_blank_pages(self, workspace, pdf_file):
         result = do_read(str(workspace), {"file_path": "uploads/doc.pdf"})
         assert "no extractable text" in result.lower()
 
     def test_read_pdf_with_text(self, workspace, pdf_file):
-        """Test PDF reading with mocked text extraction."""
-        from unittest.mock import MagicMock
+        """PDF reading with mocked text extraction."""
         mock_page = MagicMock()
         mock_page.extract_text.return_value = "Page content here"
 
@@ -197,10 +194,10 @@ class TestDoRead:
         assert "Page content here" in result
         assert "Page 1" in result
         assert "Page 2" in result
+        assert "Document: doc.pdf (2 pages)" in result
 
     def test_read_pdf_page_ranges(self, workspace, pdf_file):
-        """Test PDF with page range argument."""
-        from unittest.mock import MagicMock
+        """PDF with page range argument."""
         pages = []
         for i in range(5):
             p = MagicMock()
@@ -236,17 +233,181 @@ class TestDoRead:
 
 
 # ---------------------------------------------------------------------------
-# Output truncation
+# Smart truncation — PDF
 # ---------------------------------------------------------------------------
 
 
-class TestTruncation:
-    def test_large_file_truncated(self, workspace):
-        f = workspace / "uploads" / "big.txt"
-        f.write_text("x" * (_MAX_OUTPUT_CHARS + 10000))
-        result = do_read(str(workspace), {"file_path": "uploads/big.txt"})
-        assert len(result) < _MAX_OUTPUT_CHARS + 200  # room for truncation message
+class TestSmartTruncationPDF:
+    def test_small_pdf_no_truncation(self, workspace, pdf_file):
+        """Small PDF shows all pages with header, no continuation hint."""
+        mock_page = MagicMock()
+        mock_page.extract_text.return_value = "Short text"
+
+        with patch("pypdf.PdfReader") as MockReader:
+            MockReader.return_value.pages = [mock_page, mock_page]
+            result = do_read(str(workspace), {"file_path": "uploads/doc.pdf"})
+        assert "Document: doc.pdf (2 pages)" in result
+        assert "Showing pages" not in result
+        assert 'Use pages=' not in result
+
+    def test_large_pdf_truncates_at_page_boundary(self, workspace, pdf_file):
+        """Large PDF truncates at page boundary with continuation hint."""
+        pages = []
+        for i in range(100):
+            p = MagicMock()
+            # Each page ~1000 chars, 100 pages = ~100K > 50K budget
+            p.extract_text.return_value = f"Page {i+1} content. " + ("x" * 900)
+            pages.append(p)
+
+        with patch("pypdf.PdfReader") as MockReader:
+            MockReader.return_value.pages = pages
+            result = do_read(str(workspace), {"file_path": "uploads/doc.pdf"})
+
+        assert "Document: doc.pdf (100 pages)" in result
+        assert "Showing pages 1-" in result
+        assert "of 100" in result
+        assert 'Use pages="' in result
+        # Should NOT contain all 100 pages
+        assert "Page 100 content" not in result
+        # Should contain early pages
+        assert "Page 1 content" in result
+        assert len(result) < _MAX_OUTPUT_CHARS + 500  # budget + header/hint
+
+    def test_pdf_continuation_hint_correct_numbers(self, workspace, pdf_file):
+        """Continuation hint suggests the right next page range."""
+        pages = []
+        for i in range(50):
+            p = MagicMock()
+            p.extract_text.return_value = f"P{i+1}. " + ("y" * 2000)
+            pages.append(p)
+
+        with patch("pypdf.PdfReader") as MockReader:
+            MockReader.return_value.pages = pages
+            result = do_read(str(workspace), {"file_path": "uploads/doc.pdf"})
+
+        # Extract the last shown page from the hint
+        assert "Showing pages 1-" in result
+        assert "of 50" in result
+        assert 'to read more.' in result
+
+
+# ---------------------------------------------------------------------------
+# Smart truncation — CSV
+# ---------------------------------------------------------------------------
+
+
+class TestSmartTruncationCSV:
+    def test_small_csv_no_truncation(self, workspace, csv_file):
+        """Small CSV shows all rows with header, no hint."""
+        result = do_read(str(workspace), {"file_path": "uploads/data.csv"})
+        assert "Dataset: data.csv (3 rows" in result
+        assert "Columns: name, age, city" in result
+        assert "Showing rows" not in result
+
+    def test_large_csv_truncates_at_row_boundary(self, workspace):
+        """Large CSV truncates at row boundary with continuation hint."""
+        f = workspace / "uploads" / "big.csv"
+        with open(f, "w", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(["id", "name", "value"])
+            for i in range(10000):
+                writer.writerow([i, f"item_{i}", "x" * 50])
+
+        result = do_read(str(workspace), {"file_path": "uploads/big.csv"})
+        assert "Dataset: big.csv (10001 rows" in result
+        assert "Columns: id, name, value" in result
+        assert "Showing rows 1-" in result
+        assert "of 10001" in result
+        assert "search(query)" in result
+        assert len(result) < _MAX_OUTPUT_CHARS + 500
+
+
+# ---------------------------------------------------------------------------
+# Smart truncation — XLSX
+# ---------------------------------------------------------------------------
+
+
+class TestSmartTruncationXLSX:
+    def test_small_xlsx_no_truncation(self, workspace, xlsx_file):
+        """Small XLSX shows all data with header, no hint."""
+        result = do_read(str(workspace), {"file_path": "uploads/sheet.xlsx"})
+        assert "Workbook: sheet.xlsx (1 sheets: Data)" in result
+        assert "truncated" not in result.lower()
+
+    def test_large_xlsx_truncates_mid_sheet(self, workspace):
+        """Large XLSX truncates mid-sheet with hint."""
+        from openpyxl import Workbook
+        f = workspace / "uploads" / "big.xlsx"
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Sales"
+        ws.append(["ID", "Product", "Amount"])
+        for i in range(5000):
+            ws.append([i, f"product_{i}", i * 10])
+        wb.save(str(f))
+
+        result = do_read(str(workspace), {"file_path": "uploads/big.xlsx"})
+        assert "Workbook: big.xlsx" in result
+        assert "Sheet: Sales" in result
         assert "truncated" in result.lower()
+        assert "search(query)" in result
+        assert len(result) < _MAX_OUTPUT_CHARS + 500
+
+
+# ---------------------------------------------------------------------------
+# Smart truncation — DOCX
+# ---------------------------------------------------------------------------
+
+
+class TestSmartTruncationDOCX:
+    def test_small_docx_no_truncation(self, workspace, docx_file):
+        """Small DOCX shows all text with header, no hint."""
+        result = do_read(str(workspace), {"file_path": "uploads/report.docx"})
+        assert "Document: report.docx" in result
+        assert "Showing first" not in result
+
+    def test_large_docx_truncates_at_paragraph(self, workspace):
+        """Large DOCX truncates at paragraph boundary with hint."""
+        from docx import Document
+        f = workspace / "uploads" / "big.docx"
+        doc = Document()
+        for i in range(500):
+            doc.add_paragraph(f"Paragraph {i}. " + "Lorem ipsum dolor sit amet. " * 20)
+        doc.save(str(f))
+
+        result = do_read(str(workspace), {"file_path": "uploads/big.docx"})
+        assert "Document: big.docx" in result
+        assert "Showing first" in result
+        assert "chars" in result
+        assert "exec tasks" in result
+        assert len(result) < _MAX_OUTPUT_CHARS + 500
+
+
+# ---------------------------------------------------------------------------
+# Smart truncation — plain text
+# ---------------------------------------------------------------------------
+
+
+class TestSmartTruncationText:
+    def test_small_text_no_truncation(self, workspace, txt_file):
+        """Small text file shows all content with header, no hint."""
+        result = do_read(str(workspace), {"file_path": "uploads/hello.txt"})
+        assert "Document: hello.txt" in result
+        assert "Showing first" not in result
+
+    def test_large_text_truncates_at_line_boundary(self, workspace):
+        """Large text file truncates at line boundary with hint."""
+        f = workspace / "uploads" / "big.txt"
+        lines = [f"Line {i}: " + "a" * 100 for i in range(_MAX_OUTPUT_CHARS // 100 + 100)]
+        f.write_text("\n".join(lines))
+
+        result = do_read(str(workspace), {"file_path": "uploads/big.txt"})
+        assert "Document: big.txt" in result
+        assert "Showing first" in result
+        assert "exec tasks" in result
+        assert len(result) < _MAX_OUTPUT_CHARS + 500
+        # Should not cut mid-line
+        assert result.rstrip().endswith(("chars.", "sections.")) or "Line " in result.split("\n")[-3]
 
 
 # ---------------------------------------------------------------------------

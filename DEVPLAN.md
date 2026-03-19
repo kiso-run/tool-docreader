@@ -70,41 +70,40 @@ Initial implementation of all three actions and five format readers.
 **Solution:** Each format reader produces a structured header + truncates at semantic boundaries, with actionable continuation hints.
 
 ### PDF
-- [ ] Header: `Document: {name} ({total_pages} pages, ~{total_chars} chars)`
-- [ ] When truncated: cut at page boundary (not mid-page), append `Showing pages 1-{last_shown} of {total_pages}. Use pages="{next_start}-{next_end}" to read more.`
-- [ ] Always show page count even when not truncated
+- [x] Header: `Document: {name} ({total_pages} pages)`
+- [x] When truncated: cut at page boundary, append `Showing pages 1-{last_shown} of {total_pages}. Use pages="{next_start}-{next_end}" to read more.`
+- [x] Always show page count even when not truncated
 
 ### CSV
-- [ ] Header: `Dataset: {name} ({total_rows} rows, {n_cols} columns)\nColumns: {col_names}`
-- [ ] When truncated: cut at row boundary, append `Showing rows 1-{last_shown} of {total_rows}. Use search(query) to find specific data.`
-- [ ] Always show row count and column names even when not truncated
+- [x] Header: `Dataset: {name} ({total_rows} rows, {n_cols} columns)\nColumns: {col_names}`
+- [x] When truncated: cut at row boundary, append `Showing rows 1-{last_shown} of {total_rows}. Use search(query) to find specific data.`
+- [x] Always show row count and column names even when not truncated
 
 ### XLSX
-- [ ] Header: `Workbook: {name} ({n_sheets} sheets: {sheet_names})`
-- [ ] Per-sheet: show row count. When truncated mid-sheet: cut at row boundary, note which sheets were fully shown and which were truncated
-- [ ] Continuation hint: `Use search(query) to find specific data across sheets.`
+- [x] Header: `Workbook: {name} ({n_sheets} sheets: {sheet_names})`
+- [x] Per-sheet: show row count in section header. When truncated mid-sheet: cut at row boundary, note truncation
+- [x] Continuation hint: `Use search(query) to find specific data across sheets.`
 
 ### DOCX / Plain text
-- [ ] Header: `Document: {name} (~{total_chars} chars)`
-- [ ] When truncated: cut at paragraph/line boundary, append `Showing first {shown_chars} of {total_chars} chars. File saved at {path} — use exec tasks (head, grep) for specific sections.`
+- [x] Header: `Document: {name} (~{total_chars} chars)`
+- [x] When truncated: cut at paragraph/line boundary, append `Showing first {shown_chars} of {total_chars} chars. Use exec tasks (head, grep) for specific sections.`
 
 ### Implementation
-- [ ] Extract header generation into per-format `_header_*()` helpers
-- [ ] `_truncate_at_boundary(text, limit, sep)` — generic helper that truncates at the last occurrence of `sep` before `limit`
-- [ ] `do_read()` delegates truncation to each reader instead of the generic post-hoc chop
-- [ ] Update `_MAX_OUTPUT_CHARS` default to 50_000 (the header + hints use some of the budget; 50K is plenty for LLM context)
+- [x] Each reader handles its own truncation inline (no separate `_header_*()` helpers needed — simpler)
+- [x] Text reader uses `rfind("\n")` for line-boundary truncation; DOCX iterates paragraphs; PDF iterates pages; CSV/XLSX iterate rows
+- [x] `do_read()` delegates entirely to readers — no generic post-hoc chop
+- [x] `_MAX_OUTPUT_CHARS` reduced from 100K → 50K
 
 ### Tests
-- [ ] PDF: small file shows all pages with header; large file truncates at page boundary with continuation hint
-- [ ] CSV: small file shows all rows with header; large file truncates at row boundary with hint
-- [ ] XLSX: multi-sheet truncation; partial sheet shown
-- [ ] DOCX: large doc truncates at paragraph boundary
-- [ ] Plain text: large file truncates at line boundary
-- [ ] Verify continuation hints contain correct page/row numbers
+- [x] PDF: small file no truncation; large file truncates at page boundary with continuation hint; correct page numbers
+- [x] CSV: small file no truncation; large file truncates at row boundary with hint
+- [x] XLSX: small file no truncation; large file truncates mid-sheet with hint
+- [x] DOCX: small file no truncation; large file truncates at paragraph boundary
+- [x] Plain text: small file no truncation; large file truncates at line boundary
 
 ### Validation
-- [ ] `uv run pytest tests/ -q` passes
-- [ ] Manual test: read a 100+ page PDF → output shows header + first N pages + continuation hint
+- [x] `uv run pytest tests/ -q` — 45 passed
+- [ ] Manual test: read a 100+ page PDF → output shows header + first N pages + continuation hint (needs VPS)
 
 ## Known Issues
 

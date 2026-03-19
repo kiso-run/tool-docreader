@@ -17,8 +17,10 @@ from pathlib import Path
 
 signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
-# Maximum characters to output (prevent memory exhaustion on huge files).
-_MAX_OUTPUT_CHARS = 100_000
+# Maximum characters to output.  Each format reader self-truncates at semantic
+# boundaries (page, row, paragraph) so the planner gets actionable continuation
+# hints instead of a mid-text chop.
+_MAX_OUTPUT_CHARS = 50_000
 
 # Plain text extensions (read as-is).
 _TEXT_EXTENSIONS = frozenset({
@@ -103,30 +105,31 @@ def do_info(workspace: str, args: dict) -> str:
 
 
 def do_read(workspace: str, args: dict) -> str:
-    """Extract text content from a file."""
+    """Extract text content from a file.
+
+    Each format reader handles its own truncation at semantic boundaries
+    (pages, rows, paragraphs) and includes a structural header + continuation
+    hints when the output exceeds _MAX_OUTPUT_CHARS.
+    """
     file_path = _resolve_path(workspace, args)
     ext = file_path.suffix.lower()
 
     if ext == ".pdf":
-        text = _read_pdf(file_path, args.get("pages"))
+        return _read_pdf(file_path, args.get("pages"))
     elif ext == ".docx":
-        text = _read_docx(file_path)
+        return _read_docx(file_path)
     elif ext == ".xlsx":
-        text = _read_xlsx(file_path)
+        return _read_xlsx(file_path)
     elif ext == ".csv":
-        text = _read_csv(file_path)
+        return _read_csv(file_path)
     elif ext in _TEXT_EXTENSIONS or _is_likely_text(file_path):
-        text = _read_text(file_path)
+        return _read_text(file_path)
     else:
         return f"Unsupported file format: {ext}. Supported: PDF, DOCX, XLSX, CSV, and plain text."
 
-    if len(text) > _MAX_OUTPUT_CHARS:
-        text = text[:_MAX_OUTPUT_CHARS] + f"\n\n... (truncated at {_MAX_OUTPUT_CHARS} characters)"
-    return text
-
 
 # ---------------------------------------------------------------------------
-# Format readers
+# Format readers (each handles its own smart truncation)
 # ---------------------------------------------------------------------------
 
 
@@ -141,59 +144,198 @@ def _read_pdf(path: Path, pages_arg: str | None = None) -> str:
     else:
         indices = range(total_pages)
 
+    # Extract pages, tracking char budget
     parts: list[str] = []
+    total_chars = 0
+    last_shown = 0
     for i in indices:
         text = reader.pages[i].extract_text() or ""
-        if text.strip():
-            parts.append(f"--- Page {i + 1} ---\n{text.strip()}")
+        if not text.strip():
+            continue
+        page_text = f"--- Page {i + 1} ---\n{text.strip()}"
+        if total_chars + len(page_text) > _MAX_OUTPUT_CHARS and parts:
+            # Budget exceeded — stop at page boundary
+            last_shown = parts[-1].split("\n")[0]  # "--- Page N ---"
+            break
+        parts.append(page_text)
+        total_chars += len(page_text)
+    else:
+        # Loop completed without break — all pages fit
+        last_shown = None
+
     if not parts:
-        return f"PDF has {total_pages} pages but no extractable text."
-    return "\n\n".join(parts)
+        return f"Document: {path.name} ({total_pages} pages)\nNo extractable text."
+
+    header = f"Document: {path.name} ({total_pages} pages)"
+    body = "\n\n".join(parts)
+
+    if last_shown is not None:
+        # Find the last page number shown
+        last_page_shown = 0
+        for p in reversed(parts):
+            first_line = p.split("\n")[0]
+            if first_line.startswith("--- Page "):
+                last_page_shown = int(first_line.split()[2])
+                break
+        next_start = last_page_shown + 1
+        next_end = min(last_page_shown + 10, total_pages)
+        hint = (
+            f"\n\nShowing pages 1-{last_page_shown} of {total_pages}. "
+            f'Use pages="{next_start}-{next_end}" to read more.'
+        )
+        if pages_arg:
+            hint = (
+                f"\n\nShowing {len(parts)} of {len(list(indices)) if not isinstance(indices, range) else len(indices)} requested pages (budget reached). "
+                f'Use pages="{next_start}-{next_end}" to read more.'
+            )
+        return f"{header}\n\n{body}{hint}"
+
+    return f"{header}\n\n{body}"
 
 
 def _read_docx(path: Path) -> str:
     """Extract text from a DOCX file."""
     from docx import Document
     doc = Document(str(path))
-    parts = [p.text for p in doc.paragraphs if p.text.strip()]
-    if not parts:
-        return "DOCX file has no text content."
-    return "\n\n".join(parts)
+    paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+    if not paragraphs:
+        return f"Document: {path.name}\nDOCX file has no text content."
+
+    total_text = "\n\n".join(paragraphs)
+    total_chars = len(total_text)
+    header = f"Document: {path.name} (~{total_chars} chars)"
+
+    if total_chars <= _MAX_OUTPUT_CHARS:
+        return f"{header}\n\n{total_text}"
+
+    # Truncate at paragraph boundary
+    kept: list[str] = []
+    chars = 0
+    for para in paragraphs:
+        if chars + len(para) > _MAX_OUTPUT_CHARS and kept:
+            break
+        kept.append(para)
+        chars += len(para)
+    shown_chars = sum(len(p) for p in kept)
+    body = "\n\n".join(kept)
+    hint = (
+        f"\n\nShowing first {shown_chars} of {total_chars} chars. "
+        f"Use exec tasks (head, grep) on the file for specific sections."
+    )
+    return f"{header}\n\n{body}{hint}"
 
 
 def _read_xlsx(path: Path) -> str:
     """Extract text from an XLSX file (all sheets)."""
     from openpyxl import load_workbook
     wb = load_workbook(str(path), read_only=True, data_only=True)
+    sheet_names = wb.sheetnames
+
+    header = f"Workbook: {path.name} ({len(sheet_names)} sheets: {', '.join(sheet_names)})"
+
     parts: list[str] = []
-    for sheet_name in wb.sheetnames:
+    total_chars = 0
+    truncated_sheet = None
+    for sheet_name in sheet_names:
         ws = wb[sheet_name]
         rows: list[str] = []
+        sheet_chars = 0
+        row_count = 0
         for row in ws.iter_rows(values_only=True):
             cells = [str(c) if c is not None else "" for c in row]
-            if any(cells):
-                rows.append("\t".join(cells))
+            if not any(cells):
+                continue
+            line = "\t".join(cells)
+            row_count += 1
+            if total_chars + sheet_chars + len(line) > _MAX_OUTPUT_CHARS and (parts or rows):
+                # Budget exceeded mid-sheet
+                truncated_sheet = (sheet_name, len(rows), row_count)
+                break
+            rows.append(line)
+            sheet_chars += len(line) + 1  # +1 for newline
+
         if rows:
-            parts.append(f"--- Sheet: {sheet_name} ---\n" + "\n".join(rows))
+            parts.append(f"--- Sheet: {sheet_name} ({len(rows)} rows) ---\n" + "\n".join(rows))
+            total_chars += sheet_chars
+
+        if truncated_sheet:
+            break
+
     wb.close()
+
     if not parts:
-        return "XLSX file has no data."
-    return "\n\n".join(parts)
+        return f"{header}\nXLSX file has no data."
+
+    body = "\n\n".join(parts)
+
+    if truncated_sheet:
+        sname, shown, _total = truncated_sheet
+        hint = (
+            f"\n\nOutput truncated in sheet '{sname}' at row {shown}. "
+            f'Use search(query) to find specific data across sheets.'
+        )
+        return f"{header}\n\n{body}{hint}"
+
+    return f"{header}\n\n{body}"
 
 
 def _read_csv(path: Path) -> str:
     """Extract text from a CSV file."""
     with open(path, newline="", encoding="utf-8", errors="replace") as f:
         reader = csv.reader(f)
-        rows = ["\t".join(row) for row in reader]
-    if not rows:
-        return "CSV file is empty."
-    return "\n".join(rows)
+        all_rows = list(reader)
+
+    if not all_rows:
+        return f"Dataset: {path.name}\nCSV file is empty."
+
+    total_rows = len(all_rows)
+    # Extract column names from first row
+    col_names = ", ".join(all_rows[0]) if all_rows else ""
+    n_cols = len(all_rows[0]) if all_rows else 0
+    header = f"Dataset: {path.name} ({total_rows} rows, {n_cols} columns)\nColumns: {col_names}"
+
+    lines: list[str] = []
+    total_chars = 0
+    for row in all_rows:
+        line = "\t".join(row)
+        if total_chars + len(line) > _MAX_OUTPUT_CHARS and lines:
+            break
+        lines.append(line)
+        total_chars += len(line) + 1
+    else:
+        # All rows fit
+        body = "\n".join(lines)
+        return f"{header}\n\n{body}"
+
+    shown_rows = len(lines)
+    body = "\n".join(lines)
+    hint = (
+        f"\n\nShowing rows 1-{shown_rows} of {total_rows}. "
+        f"Use search(query) to find specific data."
+    )
+    return f"{header}\n\n{body}{hint}"
 
 
 def _read_text(path: Path) -> str:
     """Read a plain text file."""
-    return path.read_text(encoding="utf-8", errors="replace")
+    text = path.read_text(encoding="utf-8", errors="replace")
+    total_chars = len(text)
+    header = f"Document: {path.name} (~{total_chars} chars)"
+
+    if total_chars <= _MAX_OUTPUT_CHARS:
+        return f"{header}\n\n{text}"
+
+    # Truncate at line boundary
+    truncated = text[:_MAX_OUTPUT_CHARS]
+    last_newline = truncated.rfind("\n")
+    if last_newline > 0:
+        truncated = truncated[:last_newline]
+    shown_chars = len(truncated)
+    hint = (
+        f"\n\nShowing first {shown_chars} of {total_chars} chars. "
+        f"Use exec tasks (head, grep) on the file for specific sections."
+    )
+    return f"{header}\n\n{truncated}{hint}"
 
 
 # ---------------------------------------------------------------------------
