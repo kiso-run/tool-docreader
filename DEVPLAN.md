@@ -43,17 +43,19 @@ Initial implementation of all three actions and five format readers.
 - [x] Output truncation (100K chars)
 - [x] Unknown extension heuristic (85% printable ASCII)
 
-## M2 — Unit tests
+## M2 — Unit tests ✅
 
-- [ ] Test `do_read` for each format: PDF, DOCX, XLSX, CSV, plain text
-- [ ] Test `do_read` with page ranges for PDF
-- [ ] Test `do_info` for each format
-- [ ] Test `do_list` with files and empty directory
-- [ ] Test path traversal guard (rejected)
-- [ ] Test output truncation on large file
-- [ ] Test unknown extension heuristic
-- [ ] Test missing file_path error
-- [ ] Test unsupported format error
+- [x] Test `do_read` for each format: PDF, DOCX, XLSX, CSV, plain text
+- [x] Test `do_read` with page ranges for PDF (mocked PdfReader)
+- [x] Test `do_info` for each format (PDF pages, XLSX sheets, CSV rows)
+- [x] Test `do_list` with files, empty directory, and missing uploads/
+- [x] Test path traversal guard (rejected with ValueError)
+- [x] Test output truncation on large file
+- [x] Test unknown extension heuristic (text and binary)
+- [x] Test missing file_path error
+- [x] Test unsupported format error
+- [x] Functional tests: stdin/stdout subprocess contract (list, read, missing file)
+- 35 tests, all passing
 
 ## M3 — Integration with kiso registry
 
