@@ -24,7 +24,7 @@ replaced by a Model Context Protocol server.
 - [x] 28 tests green (per-format success + truncation + page range +
       metadata + MCP tool registration + delegation)
 - [x] README rewrite
-- [ ] Cut `v0.1.0` tag on GitHub *(user action)*
+- [ ] Cut `v0.1.0` tag on GitHub *(user action — manual `git tag v0.1.0 && git push --tags` by maintainer)*
 
 **Design shifts from wrapper era**:
 
@@ -104,7 +104,7 @@ Initial implementation of all three actions and five format readers.
 
 - [x] docreader already present in core registry.json (added during M761)
 - [x] Repo pushed to git@github.com:kiso-run/tool-docreader.git
-- [ ] Verify `kiso tool install docreader` works end-to-end (needs live test on VPS)
+- [ ] Verify `kiso tool install docreader` works end-to-end (needs live test on VPS) *— manual integration test by maintainer; not suitable for autonomous TDD execution.*
 
 ## M4 — Smart truncation for large files
 
@@ -146,7 +146,7 @@ Initial implementation of all three actions and five format readers.
 
 ### Validation
 - [x] `uv run pytest tests/ -q` — 45 passed
-- [ ] Manual test: read a 100+ page PDF → output shows header + first N pages + continuation hint (needs VPS)
+- [ ] Manual test: read a 100+ page PDF → output shows header + first N pages + continuation hint (needs VPS) *— manual smoke test by maintainer; not suitable for autonomous TDD execution.*
 
 ## M5 — Static fixture files + test coverage gaps
 
@@ -215,12 +215,18 @@ Generated with `tests/create_fixtures.py` (requires fpdf2, temporary install). C
 
 ---
 
-### M7 — Declare `consumes` in kiso.toml (core M826)
+### M7 — Declare `consumes` in kiso.toml (core M826) — OBSOLETE
 
 **Context:** Core M826 adds a `consumes` field to `[kiso.tool]` in kiso.toml. The planner uses
 this to auto-route session workspace files to the right tool. Vocabulary: `image`, `document`,
 `audio`, `video`, `code`, `web_page`.
 
-**Changes:**
-- [x] Add `consumes = ["document"]` to `[kiso.tool]` in kiso.toml
-- [ ] Enrich `usage_guide` with concrete arg examples and supported formats list
+**Status:** **Obsolete — superseded by the MCP rewrite (v0.1).** The `kiso.toml` file was removed
+when the legacy wrapper-era files were stripped (see v0.1 — MCP rewrite section above). MCP servers
+do not consume the same configuration surface as wrapper-era tools; tool discovery and routing in
+the MCP world happen via the MCP protocol's own tool schema declarations, not via `consumes` fields
+in a `kiso.toml`. No action needed.
+
+**Original tasks (not applicable to MCP era):**
+- [x] ~~Add `consumes = ["document"]` to `[kiso.tool]` in kiso.toml~~ (file removed)
+- [x] ~~Enrich `usage_guide` with concrete arg examples and supported formats list~~ (file removed; equivalent guidance now lives in the MCP tool descriptions in `src/kiso_docreader_mcp/server.py` and in README.md)
